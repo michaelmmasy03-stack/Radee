@@ -1,0 +1,113 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'michaelmmasy03@gmail.com' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    function isTeacher() {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher' ||
+        isAdmin()
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Helpers ---
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['title', 'content', 'authorId', 'authorName', 'type', 'createdAt']) &&
+             data.keys().size() <= 7 && // title, content, authorId, authorName, type, createdAt, eventDate
+             data.title is string && data.title.size() <= 200 &&
+             data.content is string && data.content.size() <= 5000 &&
+             data.authorId == request.auth.uid &&
+             data.authorName is string &&
+             data.type in ['info', 'urgent', 'event'] &&
+             data.createdAt == request.time;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['displayName', 'email', 'role']) &&
+             data.displayName is string && data.displayName.size() <= 100 &&
+             data.email is string && data.email.size() <= 100 &&
+             data.role in ['student', 'teacher', 'admin'];
+    }
+
+    function isValidEvent(data) {
+      return data.keys().hasAll(['title', 'description', 'date', 'authorId', 'createdAt']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.description is string && data.description.size() <= 5000 &&
+             // data.date is timestamp (passed as format)
+             data.authorId == request.auth.uid &&
+             data.createdAt == request.time;
+    }
+
+    // --- Collection Rules ---
+
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow create: if isTeacher() && isValidAnnouncement(incoming());
+      allow update: if isTeacher() && 
+                      existing().authorId == request.auth.uid && 
+                      isValidAnnouncement(incoming()) &&
+                      incoming().authorId == existing().authorId &&
+                      incoming().createdAt == existing().createdAt;
+      allow delete: if isTeacher() && existing().authorId == request.auth.uid;
+    }
+
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isTeacher() && isValidEvent(incoming());
+      allow update: if isTeacher() && 
+                      existing().authorId == request.auth.uid && 
+                      isValidEvent(incoming());
+      allow delete: if isTeacher() && existing().authorId == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      // Users can only see their own profile, or admins can see all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // On create, students can only set their role to 'student'
+      // Only admins or the bootstrap email can set 'teacher' or 'admin'
+      allow create: if isOwner(userId) && (
+        (incoming().role == 'student') || 
+        (request.auth.token.email == 'michaelmmasy03@gmail.com')
+      ) && isValidUser(incoming());
+
+      // Updates are very restricted: can't change your own role unless admin
+      allow update: if isOwner(userId) && (
+        (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'fcmToken'])) ||
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'displayName', 'fcmToken']))
+      ) && isValidUser(incoming());
+    }
+  }
+}

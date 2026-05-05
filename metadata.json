@@ -1,0 +1,6 @@
+{
+  "name": "Radee Juice",
+  "description": "Fresh, cold-pressed juices and vibrant smoothies for your daily glow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["menu display", "online presence", "seasonal specials"]
+}
